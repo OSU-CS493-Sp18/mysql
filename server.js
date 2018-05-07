@@ -30,117 +30,118 @@ app.use(bodyParser.json());
 app.use(express.static('public'));
 app.use(logger);
 
-function getLodgingsCount(callback) {
-  mysqlPool.query(
-    'SELECT COUNT(*) AS count FROM lodgings',
-    function (err, results) {
-      if (err) {
-        callback(err, null);
-      } else {
-        callback(null, results[0].count);
+function getLodgingsCount() {
+  return new Promise((resolve, reject) => {
+    mysqlPool.query(
+      'SELECT COUNT(*) AS count FROM lodgings',
+      function (err, results) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(results[0].count);
+        }
       }
-    }
-  );
+    );
+  });
 }
 
-function getLodgingsPage(offset, count, callback) {
-  mysqlPool.query(
-    'SELECT * FROM lodgings ORDER BY id LIMIT ?,?',
-    [ offset, count ],
-    function (err, results) {
-      callback(err, results);
-    }
-  );
+function getLodgingsPage(page, count) {
+  return new Promise((resolve, reject) => {
+    const numPerPage = 10;
+    const lastPage = Math.ceil(count / numPerPage);
+    page = page < 1 ? 1 : page;
+    page = page > lastPage ? lastPage : page;
+    const offset = (page - 1) * numPerPage;
+    mysqlPool.query(
+      'SELECT * FROM lodgings ORDER BY id LIMIT ?,?',
+      [ offset, numPerPage ],
+      function (err, results) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            lodgings: results,
+            pageNumber: page,
+            totalPages: lastPage,
+            pageSize: numPerPage,
+            totalCount: count
+          });
+        }
+      }
+    );
+  });
 }
 
 app.get('/lodgings', function (req, res) {
 
-  getLodgingsCount(function (err, count) {
-    if (err) {
+  getLodgingsCount()
+    .then((count) => {
+      return getLodgingsPage(parseInt(req.query.page) || 1, count);
+    })
+    .then((lodgingsInfo) => {
+      lodgingsInfo.links = {};
+      let { links, lastPage, pageNumber } = lodgingsInfo;
+      if (pageNumber < lastPage) {
+        links.nextPage = '/lodgings?page=' + (pageNumber + 1);
+        links.lastPage = '/lodgings?page=' + lastPage;
+      }
+      if (pageNumber > 1) {
+        links.prevPage = '/lodgings?page=' + (pageNumber - 1);
+        links.firstPage = '/lodgings?page=1';
+      }
+      res.status(200).json(lodgingsInfo);
+    })
+    .catch((err) => {
       res.status(500).json({
         error: "Error fetching lodgings list."
       });
-    } else {
-      let page = parseInt(req.query.page) || 1;
-      const numPerPage = 10;
-      const lastPage = Math.ceil(count / numPerPage);
-      page = page < 1 ? 1 : page;
-      page = page > lastPage ? lastPage : page;
-      const start = (page - 1) * numPerPage;
-
-      getLodgingsPage(start, numPerPage, function (err, lodgingsPage) {
-        if (err) {
-          res.status(500).json({
-            error: "Error fetching lodgings list."
-          });
-        } else {
-          let links = {};
-          if (page < lastPage) {
-            links.nextPage = '/lodgings?page=' + (page + 1);
-            links.lastPage = '/lodgings?page=' + lastPage;
-          }
-          if (page > 1) {
-            links.prevPage = '/lodgings?page=' + (page - 1);
-            links.firstPage = '/lodgings?page=1';
-          }
-
-          res.status(200).json({
-            lodgings: lodgingsPage,
-            pageNumber: page,
-            totalPages: lastPage,
-            pageSize: numPerPage,
-            totalCount: count,
-            links: links
-          });
-        }
-      });
-    }
-  });
-
+    });
 });
 
-function insertNewLodging(lodging, callback) {
-  const lodgingValues = {
-    id: null,
-    name: lodging.name,
-    description: lodging.description,
-    street: lodging.street,
-    city: lodging.city,
-    state: lodging.state,
-    zip: lodging.zip,
-    price: lodging.price,
-    ownerid: lodging.ownerID
-  };
-  mysqlPool.query(
-    'INSERT INTO lodgings SET ?',
-    lodgingValues,
-    function (err, result) {
-      if (err) {
-        callback(err, null);
-      } else {
-        callback(null, result.insertId);
+function insertNewLodging(lodging) {
+  return new Promise((resolve, reject) => {
+    const lodgingValues = {
+      id: null,
+      name: lodging.name,
+      description: lodging.description,
+      street: lodging.street,
+      city: lodging.city,
+      state: lodging.state,
+      zip: lodging.zip,
+      price: lodging.price,
+      ownerid: lodging.ownerID
+    };
+    mysqlPool.query(
+      'INSERT INTO lodgings SET ?',
+      lodgingValues,
+      function (err, result) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(result.insertId);
+        }
       }
-    }
-  );
+    );
+  });
 }
 
 app.post('/lodgings', function (req, res, next) {
 
   if (req.body && req.body.name && req.body.price && req.body.ownerID) {
-    insertNewLodging(req.body, function (err, id) {
-      if (err) {
-        res.status(500).json({
-          error: "Error inserting lodging."
-        });
-      } else {
+    insertNewLodging(req.body)
+      .then((id) => {
         res.status(201).json({
           id: id,
           links: {
             lodging: '/lodgings/' + id
           }
         });
-      }
-    });
+      })
+      .catch((err) => {
+        res.status(500).json({
+          error: "Error inserting lodging."
+        });
+      });
   } else {
     res.status(400).json({
       err: "Request needs a JSON body with a name, a price, and an owner ID"
@@ -149,13 +150,37 @@ app.post('/lodgings', function (req, res, next) {
 
 });
 
+function getLodgingByID(lodgingID) {
+  return new Promise((resolve, reject) {
+    mysqlPool.query(
+      'SELECT * FROM lodgings WHERE id = ?',
+      [ lodgingID ],
+      function (err, results) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(results[0]);
+        }
+      }
+    )
+  });
+}
+
 app.get('/lodgings/:lodgingID', function (req, res, next) {
   const lodgingID = parseInt(req.params.lodgingID);
-  if (lodgings[lodgingID]) {
-    res.status(200).json(lodgings[lodgingID]);
-  } else {
-    next();
-  }
+  getLodgingByID(lodgingID)
+    .then((lodging) => {
+      if (lodging) {
+        res.status(200).json(lodging);
+      } else {
+        next();
+      }
+    })
+    .catch((err) => {
+      res.status(500).json({
+        error: "Error fetching lodging."
+      });
+    });
 });
 
 app.put('/lodgings/:lodgingID', function (req, res, next) {
