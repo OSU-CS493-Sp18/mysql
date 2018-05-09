@@ -80,10 +80,10 @@ app.get('/lodgings', function (req, res) {
     })
     .then((lodgingsInfo) => {
       lodgingsInfo.links = {};
-      let { links, lastPage, pageNumber } = lodgingsInfo;
-      if (pageNumber < lastPage) {
+      let { links, totalPages, pageNumber } = lodgingsInfo;
+      if (pageNumber < totalPages) {
         links.nextPage = '/lodgings?page=' + (pageNumber + 1);
-        links.lastPage = '/lodgings?page=' + lastPage;
+        links.lastPage = '/lodgings?page=' + totalPages;
       }
       if (pageNumber > 1) {
         links.prevPage = '/lodgings?page=' + (pageNumber - 1);
@@ -144,14 +144,14 @@ app.post('/lodgings', function (req, res, next) {
       });
   } else {
     res.status(400).json({
-      err: "Request needs a JSON body with a name, a price, and an owner ID"
+      error: "Request needs a JSON body with a name, a price, and an owner ID"
     });
   }
 
 });
 
 function getLodgingByID(lodgingID) {
-  return new Promise((resolve, reject) {
+  return new Promise((resolve, reject) => {
     mysqlPool.query(
       'SELECT * FROM lodgings WHERE id = ?',
       [ lodgingID ],
@@ -183,54 +183,130 @@ app.get('/lodgings/:lodgingID', function (req, res, next) {
     });
 });
 
+function updateLodgingByID(lodgingID, lodging) {
+  return new Promise((resolve, reject) => {
+    const lodgingValues = {
+      name: lodging.name,
+      description: lodging.description,
+      street: lodging.street,
+      city: lodging.city,
+      state: lodging.state,
+      zip: lodging.zip,
+      price: lodging.price,
+      ownerid: lodging.ownerID
+    };
+    mysqlPool.query(
+      'UPDATE lodgings SET ? WHERE id = ?',
+      [ lodgingValues, lodgingID ],
+      function (err, result) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(result.affectedRows > 0);
+        }
+      }
+    );
+  });
+}
+
 app.put('/lodgings/:lodgingID', function (req, res, next) {
 
   const lodgingID = parseInt(req.params.lodgingID);
-  if (lodgings[lodgingID]) {
-    if (req.body && req.body.name && req.body.price && req.body.ownerID) {
-      lodgings[lodgingID] = {
-        name: req.body.name,
-        price: req.body.price,
-        ownerID: req.body.ownerID,
-        description: req.body.description || "No description"
-      };
-      res.status(200).json({
-        links: {
-          lodging: '/lodgings/' + lodgingID
+  if (req.body && req.body.name && req.body.price && req.body.ownerID) {
+    updateLodgingByID(lodgingID, req.body)
+      .then((updateSuccessful) => {
+        if (updateSuccessful) {
+          res.status(200).json({
+            links: {
+              lodging: `/lodgings/${lodgingID}`
+            }
+          });
+        } else {
+          next();
         }
+      })
+      .catch((err) => {
+        res.status(500).json({
+          error: "Unable to update lodging."
+        });
       });
-    } else {
-      res.status(400).json({
-        err: "Request needs a JSON body with a name, a price, and an owner ID"
-      });
-    }
   } else {
-    next();
+    res.status(400).json({
+      error: "Request needs a JSON body with a name, a price, and an owner ID"
+    });
   }
 
 });
+
+function deleteLodgingByID(lodgingID) {
+  return new Promise((resolve, reject) => {
+    mysqlPool.query(
+      'DELETE FROM lodgings WHERE id = ?',
+      [ lodgingID ],
+      function (err, result) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(result.affectedRows > 0);
+        }
+      }
+    );
+  });
+
+}
 
 app.delete('/lodgings/:lodgingID', function (req, res, next) {
   const lodgingID = parseInt(req.params.lodgingID);
-  if (lodgings[lodgingID]) {
-    lodgings[lodgingID] = null;
-    res.status(204).end();
-  } else {
-    next();
-  }
+  deleteLodgingByID(lodgingID)
+    .then((deleteSuccessful) => {
+      if (deleteSuccessful) {
+        res.status(204).end();
+      } else {
+        next();
+      }
+    })
+    .catch((err) => {
+      res.status(500).json({
+        error: "Unable to delete lodging."
+      });
+    });
 });
+
+function getLodgingsByOwnerID(ownerID) {
+  return new Promise((resolve, reject) => {
+    mysqlPool.query(
+      'SELECT * FROM lodgings WHERE ownerid = ?',
+      [ ownerID ],
+      function (err, results) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(results);
+        }
+      }
+    );
+  });
+}
 
 app.get('/users/:userID/lodgings', function (req, res, next) {
   const ownerID = parseInt(req.params.userID);
-  const ownerLodgings = lodgings.filter(lodging => lodging.ownerID === ownerID);
-  res.status(200).json({
-    lodgings: ownerLodgings
-  });
+  getLodgingsByOwnerID(ownerID)
+    .then((ownerLodgings) => {
+      res.status(200).json({
+        lodgings: ownerLodgings
+      });
+    })
+    .catch((err) => {
+      res.status(500).json({
+        error: `Unable to fetch lodgings for user ${ownerID}`
+      });
+    });
+
 });
 
 app.use('*', function (req, res, next) {
   res.status(404).json({
-    err: "Path " + req.url + " does not exist"
+    error: "Path " + req.url + " does not exist"
   });
 });
 
